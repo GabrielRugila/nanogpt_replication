@@ -92,13 +92,21 @@ class Head(nn.Module):
         v = self.value(x)
         out = wei @ v
         return out
+    
+class MultiHeadAttention(nn.Module):
+    def __init__(self, num_heads, head_size):
+        super().__init__()
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+
+    def forward(self, x):
+        return torch.cat([head(x) for head in self.heads], dim=-1)
 
 class BiGramLM(nn.Module):
     def __init__(self):
         super().__init__()
         self.tk_emb_table = nn.Embedding(vocab_size, n_embd_dim)
         self.position_emb_table = nn.Embedding(block_size, n_embd_dim)
-        self.sa_head = Head(n_embd_dim)
+        self.sa_heads = MultiHeadAttention(4, n_embd_dim//4)
         self.lm_head = nn.Linear(n_embd_dim, vocab_size)
 
     def forward(self, idx, targets=None):
@@ -108,7 +116,7 @@ class BiGramLM(nn.Module):
         pos_embd = self.position_emb_table(torch.arange(T, device=idx.device)) # (Time, Channel)
 
         x = tk_embd + pos_embd
-        x = self.sa_head(x)
+        x = self.sa_heads(x)
         logits = self.lm_head(x)
 
         # logits = torch.permute(logits, (0, 2, 1))
