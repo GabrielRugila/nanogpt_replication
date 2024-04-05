@@ -111,14 +111,29 @@ class FeedForward(nn.Module):
     
     def forward(self, x):
         return self.net(x)
+    
+class Block(nn.Module):
+    """Transformer Block."""
+    def __init__(self, n_embd_dim, n_heads):
+        super().__init__()
+        head_size = n_embd_dim // n_heads
+        self.sa = MultiHeadAttention(n_heads, head_size) # communication
+        self.ffwd = FeedForward(n_embd_dim) # computation
 
+    def forward(self, x):
+        x = self.sa(x)
+        x - self.ffwd(x)
+        return x
 class BiGramLM(nn.Module):
     def __init__(self):
         super().__init__()
         self.tk_emb_table = nn.Embedding(vocab_size, n_embd_dim)
         self.position_emb_table = nn.Embedding(block_size, n_embd_dim)
-        self.sa_heads = MultiHeadAttention(4, n_embd_dim//4)
-        self.ffwd = FeedForward(n_embd_dim)
+        self.blocks = nn.Sequential(
+            Block(n_embd_dim, 4),
+            Block(n_embd_dim, 4),
+            Block(n_embd_dim, 4),
+        )
         self.lm_head = nn.Linear(n_embd_dim, vocab_size)
 
     def forward(self, idx, targets=None):
@@ -128,8 +143,7 @@ class BiGramLM(nn.Module):
         pos_embd = self.position_emb_table(torch.arange(T, device=idx.device)) # (Time, Channel)
 
         x = tk_embd + pos_embd
-        x = self.sa_heads(x)
-        x = self.ffwd(x)
+        x = self.blocks(x)
         logits = self.lm_head(x)
 
         # logits = torch.permute(logits, (0, 2, 1))
