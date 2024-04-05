@@ -2,14 +2,17 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-block_size = 8
-batch_size = 32
+block_size = 64
+batch_size = 256
 max_iters = 5000
 eval_interval = 500
-lr = 1e-3
+lr = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
-n_embd_dim = 32
+n_embd_dim = 384
+n_head = 6
+n_layer = 6
+dropout = 0.2
 
 
 #wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
@@ -59,6 +62,7 @@ def estimate_loss():
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
             X, Y = get_batch(split)
+            X, Y = X.to(device), Y.to(device)
             logits, loss = model(X, Y)
             losses[k] = loss.item()
         out[split] = losses.mean()
@@ -80,6 +84,8 @@ class Head(nn.Module):
         self.value = nn.Linear(n_embd_dim, head_size, bias=False)
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
 
+        self.dropout = nn.Dropout(dropout)
+
     def forward(self, x):
         B, T, C = x.shape
         k = self.key(x)
@@ -88,6 +94,7 @@ class Head(nn.Module):
         wei = q @ k.transpose(-2, -1) * C**-0.5
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
         wei = F.softmax(wei, dim=-1)
+        wei = self.dropout(wei)
         # weighted aggregation of values
         v = self.value(x)
         out = wei @ v
@@ -98,10 +105,11 @@ class MultiHeadAttention(nn.Module):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
         self.proj = nn.Linear(n_embd_dim, n_embd_dim)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         out = torch.cat([head(x) for head in self.heads], dim=-1)
-        out = self.proj(out)
+        out = self.dropout(self.proj(out))
         return out
     
 class FeedForward(nn.Module):
@@ -111,6 +119,7 @@ class FeedForward(nn.Module):
             nn.Linear(n_embd_dim, 4 * n_embd_dim),
             nn.ReLU(),
             nn.Linear(4 * n_embd_dim, n_embd_dim), # projection layer
+            nn.Dropout(dropout),
         )
     
     def forward(self, x):
@@ -136,11 +145,8 @@ class BiGramLM(nn.Module):
         super().__init__()
         self.tk_emb_table = nn.Embedding(vocab_size, n_embd_dim)
         self.position_emb_table = nn.Embedding(block_size, n_embd_dim)
-        self.blocks = nn.Sequential(
-            Block(n_embd_dim, 4),
-            Block(n_embd_dim, 4),
-            Block(n_embd_dim, 4),
-        )
+        self.blocks = nn.Sequential(*[Block(n_embd_dim, n_heads=n_head) for _ in range(n_layer)])
+        self.ln_f = nn.LayerNorm(n_embd_dim)
         self.lm_head = nn.Linear(n_embd_dim, vocab_size)
 
     def forward(self, idx, targets=None):
@@ -148,9 +154,9 @@ class BiGramLM(nn.Module):
 
         tk_embd = self.tk_emb_table(idx) # (Batch, Time, Channel)
         pos_embd = self.position_emb_table(torch.arange(T, device=idx.device)) # (Time, Channel)
-
         x = tk_embd + pos_embd
         x = self.blocks(x)
+        x = self.ln_f(x)
         logits = self.lm_head(x)
 
         # logits = torch.permute(logits, (0, 2, 1))
@@ -181,6 +187,7 @@ class BiGramLM(nn.Module):
         return idx
     
 model = BiGramLM().to(device)
+print(sum(p.numel() for p in model.parameters()) / 1e6, 'M Parameters')
 
 optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
@@ -198,4 +205,4 @@ for it in range(max_iters):
         print(f'Iter {it:4d}, Train loss: {losses["train"]:.2f}, Val loss: {losses["val"]:.2f}')
 
 context = torch.zeros((1,1), dtype=torch.long, device=device)
-print(decode(model.generate(context, 200)[0].cpu().numpy()))
+print(decode(model.generate(context, 500)[0].cpu().numpy()))
