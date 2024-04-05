@@ -123,11 +123,14 @@ class Block(nn.Module):
         head_size = n_embd_dim // n_heads
         self.sa = MultiHeadAttention(n_heads, head_size) # communication
         self.ffwd = FeedForward(n_embd_dim) # computation
+        self.ln1 = nn.LayerNorm(n_embd_dim)
+        self.ln2 = nn.LayerNorm(n_embd_dim)
 
     def forward(self, x):
-        x = x + self.sa(x)
-        x = x + self.ffwd(x)
+        x = x + self.sa(self.ln1(x))
+        x = x + self.ffwd(self.ln2(x))
         return x
+
 class BiGramLM(nn.Module):
     def __init__(self):
         super().__init__()
@@ -190,7 +193,7 @@ for it in range(max_iters):
     loss.backward()
     optimizer.step()
 
-    if it % eval_interval == 0:
+    if it % eval_interval == 0 or it == max_iters - 1:
         losses = estimate_loss()
         print(f'Iter {it:4d}, Train loss: {losses["train"]:.2f}, Val loss: {losses["val"]:.2f}')
 
