@@ -4,9 +4,9 @@ from torch.nn import functional as F
 
 block_size = 8
 batch_size = 32
-max_iters = 3000
-eval_interval = 300
-lr = 1e-2
+max_iters = 5000
+eval_interval = 500
+lr = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
 n_embd_dim = 32
@@ -72,15 +72,44 @@ for b in range(batch_size):
         context = xb[b, :t+1]
         target = yb[b, t]
 
+class Head(nn.Module):
+    def __init__(self, head_size):
+        super().__init__()
+        self.key = nn.Linear(n_embd_dim, head_size, bias=False)
+        self.query = nn.Linear(n_embd_dim, head_size, bias=False)
+        self.value = nn.Linear(n_embd_dim, head_size, bias=False)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+
+    def forward(self, x):
+        B, T, C = x.shape
+        k = self.key(x)
+        q = self.query(x)
+        # compute the attention scores ("affinities")
+        wei = q @ k.transpose(-2, -1) * C**-0.5
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+        wei = F.softmax(wei, dim=-1)
+        # weighted aggregation of values
+        v = self.value(x)
+        out = wei @ v
+        return out
+
 class BiGramLM(nn.Module):
     def __init__(self):
         super().__init__()
         self.tk_emb_table = nn.Embedding(vocab_size, n_embd_dim)
+        self.position_emb_table = nn.Embedding(block_size, n_embd_dim)
+        self.sa_head = Head(n_embd_dim)
         self.lm_head = nn.Linear(n_embd_dim, vocab_size)
 
     def forward(self, idx, targets=None):
+        B, T = idx.shape
+
         tk_embd = self.tk_emb_table(idx) # (Batch, Time, Channel)
-        logits = self.lm_head(tk_embd) # (Batch, Time, Vocab size)
+        pos_embd = self.position_emb_table(torch.arange(T, device=idx.device)) # (Time, Channel)
+
+        x = tk_embd + pos_embd
+        x = self.sa_head(x)
+        logits = self.lm_head(x)
 
         # logits = torch.permute(logits, (0, 2, 1))
         if targets is None:
@@ -95,8 +124,10 @@ class BiGramLM(nn.Module):
 
     def generate(self, idx, max_new_tokens):
         for _ in range(max_new_tokens):
+            # crop the idx to the last block_size tokens
+            idx_cond = idx[:, -block_size:]
             # get predictions
-            logits, loss = self(idx)
+            logits, _ = self(idx_cond)
             # focus on last time step
             logits = logits[:, -1, :]
             # apply softmax to get probabilities
